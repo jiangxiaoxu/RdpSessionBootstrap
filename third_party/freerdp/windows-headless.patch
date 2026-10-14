@@ -1,0 +1,52 @@
+diff --git a/client/common/cmdline.c b/client/common/cmdline.c
+index 692b2d635e..125b9d00ce 100644
+--- a/client/common/cmdline.c
++++ b/client/common/cmdline.c
+@@ -6198,6 +6198,7 @@ typedef struct
+ BOOL freerdp_client_load_addins(rdpChannels* channels, rdpSettings* settings)
+ {
+ 	ChannelToLoad dynChannels[] = {
++		{ FreeRDP_BOOL_UNUSED, nullptr, nullptr },
+ #if defined(CHANNEL_AINPUT_CLIENT)
+ 		{ FreeRDP_BOOL_UNUSED, AINPUT_CHANNEL_NAME, nullptr }, /* always loaded */
+ #endif
+@@ -6237,6 +6238,7 @@ BOOL freerdp_client_load_addins(rdpChannels* channels, rdpSettings* settings)
+ 	};
+ 
+ 	ChannelToLoad staticChannels[] = {
++		{ FreeRDP_BOOL_UNUSED, nullptr, nullptr },
+ #if defined(CHANNEL_RDPSND_CLIENT)
+ 		{ FreeRDP_AudioPlayback, RDPSND_CHANNEL_NAME, nullptr },
+ #endif
+@@ -6259,6 +6261,8 @@ BOOL freerdp_client_load_addins(rdpChannels* channels, rdpSettings* settings)
+ 	 */
+ 	for (size_t i = 0; i < ARRAYSIZE(dynChannels); i++)
+ 	{
++		if (!dynChannels[i].channelName)
++			continue;
+ 		if ((dynChannels[i].settingId == FreeRDP_BOOL_UNUSED) ||
+ 		    freerdp_settings_get_bool(settings, dynChannels[i].settingId))
+ 		{
+@@ -6475,6 +6479,8 @@ BOOL freerdp_client_load_addins(rdpChannels* channels, rdpSettings* settings)
+ 	/* step 3: schedule some static channels to load depending on the settings */
+ 	for (size_t i = 0; i < ARRAYSIZE(staticChannels); i++)
+ 	{
++		if (!staticChannels[i].channelName)
++			continue;
+ 		if ((staticChannels[i].settingId == 0) ||
+ 		    freerdp_settings_get_bool(settings, staticChannels[i].settingId))
+ 		{
+diff --git a/client/CMakeLists.txt b/client/CMakeLists.txt
+index 1a6fefb6fe..6775de5b1b 100644
+--- a/client/CMakeLists.txt
++++ b/client/CMakeLists.txt
+@@ -26,6 +26,9 @@ endif()
+ 
+ if(FREERDP_VENDOR AND WITH_CLIENT)
+   if(WIN32 AND NOT UWP)
++    if(WITH_SAMPLE)
++      add_subdirectory(Sample)
++    endif()
+     option(WITH_CLIENT_WINDOWS "Build native windows client" ON)
+     if(WITH_CLIENT_WINDOWS AND NOT WITHOUT_FREERDP_3x_DEPRECATED)
+       add_subdirectory(Windows)

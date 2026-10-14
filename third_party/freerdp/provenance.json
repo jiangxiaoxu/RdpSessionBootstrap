@@ -1,0 +1,12 @@
+{
+  "version": "3.32.2",
+  "source": "https://github.com/FreeRDP/FreeRDP/archive/refs/tags/3.32.2.zip",
+  "sourceZipSha256": "49BDFE90DDFBC1152FF8EBBB2F81EDFF0C753533119FBFC76A5A5A8236F1B5D7",
+  "patches": ["windows-headless.patch", "sample-no-channels.patch"],
+  "validatedBinarySha256": "35143D854AC1B3FFE10E0E1B29C8263F1A5BAACF6F31A59425E1385A07554942",
+  "validatedToolchain": "MSVC 2022 17.14 x64 Release /MT",
+  "validatedDependencies": ["OpenSSL 3.6.5#1 static", "zlib 1.3.2#2 static"],
+  "vcpkgToolVersion": "2026-09-26",
+  "vcpkgPortsCommit": null,
+  "note": "Original dependency source was a ZIP without a recorded Git revision. Dependency versions are a validated baseline, not a claim of bit-for-bit reproducibility."
+}

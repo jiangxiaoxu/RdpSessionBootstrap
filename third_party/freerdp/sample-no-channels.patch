@@ -1,0 +1,42 @@
+diff --git a/client/Sample/tf_freerdp.c b/client/Sample/tf_freerdp.c
+index 3194a74ef0..737c16d6dc 100644
+--- a/client/Sample/tf_freerdp.c
++++ b/client/Sample/tf_freerdp.c
+@@ -306,12 +306,27 @@ disconnect:
+  * if available. */
+ static BOOL tf_client_global_init(void)
+ {
+-	return freerdp_handle_signals() == 0;
++#ifdef _WIN32
++	WSADATA wsaData;
++	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
++		return FALSE;
++#endif
++	if (freerdp_handle_signals() != 0)
++	{
++#ifdef _WIN32
++		WSACleanup();
++#endif
++		return FALSE;
++	}
++	return TRUE;
+ }
+ 
+ /* Optional global tear down */
+ static void tf_client_global_uninit(void)
+ {
++#ifdef _WIN32
++	WSACleanup();
++#endif
+ }
+ 
+ static int tf_logon_error_info(freerdp* instance, UINT32 data, UINT32 type)
+@@ -337,6 +352,8 @@ static BOOL tf_client_new(freerdp* instance, rdpContext* context)
+ 	if (!instance || !context)
+ 		return FALSE;
+ 
++	/* This bootstrap build intentionally has no virtual channel plugins. */
++	instance->LoadChannels = nullptr;
+ 	instance->PreConnect = tf_pre_connect;
+ 	instance->PostConnect = tf_post_connect;
+ 	instance->PostDisconnect = tf_post_disconnect;

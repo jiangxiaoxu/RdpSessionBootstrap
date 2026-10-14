@@ -1,0 +1,20 @@
+# 编译输出和本地依赖.
+**/bin/
+**/obj/
+artifacts/
+.vs/
+.idea/
+*.user
+*.suo
+
+# 运行状态和凭据不得进入源码仓库.
+private/
+logs/
+diagnostics/
+credential.dpapi
+config.json
+*.log
+*.zip
+*.exe
+*.dll
+*.pdb

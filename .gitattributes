@@ -1,0 +1,8 @@
+* text=auto
+*.cs text eol=lf
+*.csproj text eol=lf
+*.ps1 text eol=lf
+*.md text eol=lf
+# 补丁的上下文前缀空格属于 diff 格式, 不是源码缩进或行尾空白.
+*.patch text eol=lf whitespace=-blank-at-eol,-space-before-tab
+*.json text eol=lf
