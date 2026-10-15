@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Security;
@@ -20,6 +21,7 @@ public static class Program
     static readonly Native.Handler HandlerCallback = Control;
     record Config(string Username, string Domain, string AccountSid, string CertificateSha256);
     static Config? activeConfig;
+    static RunLog? runLog;
     record Session(int Id, string User, string Sid, int State);
 
     static int Main(string[] args) { Console.OutputEncoding = Encoding.UTF8;
@@ -134,18 +136,6 @@ public static class Program
         }
     }
 
-    static void SecureDirectory(string path)
-    {
-        var security = new System.Security.AccessControl.DirectorySecurity();
-        security.SetAccessRuleProtection(true, false);
-        foreach (string sid in new[] { "S-1-5-18", "S-1-5-32-544" })
-            security.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
-                new SecurityIdentifier(sid), System.Security.AccessControl.FileSystemRights.FullControl,
-                System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit,
-                System.Security.AccessControl.PropagationFlags.None, System.Security.AccessControl.AccessControlType.Allow));
-        new DirectoryInfo(path).SetAccessControl(security);
-    }
-
     static Native.ServiceProcessStatus? QueryOwnServiceStatus()
     {
         IntPtr manager = Native.OpenSCManager(null, null, 1);
@@ -179,10 +169,106 @@ public static class Program
         }
     }
 
+    const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\RdpSessionBootstrap";
+
+    public static Version? GetInstalledVersion()
+    {
+        using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(UninstallKey);
+        if (key == null)
+        {
+            if (new[] { "app", "client", "private" }.Any(folder => Directory.Exists(Path.Combine(Root, folder))))
+                throw new IOException("检测到已有安装文件, 但卸载登记缺失. 请先修复安装登记或卸载后重装.");
+            return null;
+        }
+        string? value = key.GetValue("DisplayVersion") as string;
+        if (!Version.TryParse(value, out var version) || version.Build < 0 || version.Revision > 0)
+            throw new IOException("已有安装的版本登记无效, 无法安全判断升级方向.");
+        return new Version(version.Major, version.Minor, version.Build);
+    }
+
+    public static void Upgrade()
+    {
+        CheckExternalPackage();
+        using var identity = WindowsIdentity.GetCurrent();
+        if (!new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator) ||
+            Process.GetCurrentProcess().SessionId == 0 || !Environment.UserInteractive)
+            throw new Exception("升级必须由当前登录用户以管理员权限运行.");
+        Version installed = GetInstalledVersion() ?? throw new Exception("尚未安装, 请先安装.");
+        string currentText = typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion;
+        Version current = Version.Parse(currentText);
+        if (current.Build < 0 || current.Revision > 0) throw new IOException("安装包版本必须为三段版本号.");
+        current = new Version(current.Major, current.Minor, current.Build);
+        if (installed > current) throw new Exception($"已安装版本 {installed} 高于安装包版本 {current}. 不支持降级.");
+        Config config = JsonSerializer.Deserialize<Config>(File.ReadAllText(ConfigPath)) ?? throw new Exception("已有安装配置为空.");
+        if (string.IsNullOrWhiteSpace(config.AccountSid) || identity.User?.Value != config.AccountSid)
+            throw new Exception("升级必须使用原安装账号, 当前用户 SID 与已保存的账号不一致.");
+        if (!File.Exists(CredentialPath)) throw new IOException("已有安装的凭据文件缺失, 请重新安装.");
+        if (QueryOwnServiceStatus() == null) throw new IOException("已有安装的服务登记缺失, 无法升级.");
+        foreach (string relative in new[] { "RdpSessionBootstrap.exe", "RdpSessionBootstrap.dll", "RdpSessionBootstrap.deps.json", "RdpSessionBootstrap.runtimeconfig.json", "Setup.exe", "Setup.dll", "Setup.deps.json", "Setup.runtimeconfig.json", "client\\sfreerdp.exe", "client\\LICENSE-FreeRDP.txt", "client\\LICENSE-OpenSSL.txt", "client\\LICENSE-zlib.txt" })
+            if (!File.Exists(Path.Combine(AppContext.BaseDirectory, relative))) throw new IOException("安装包缺少文件: " + relative);
+        DirectoryAccess.Apply(Root, config.AccountSid, traversalOnly: true);
+        DirectoryAccess.Apply(Path.Combine(Root, "private"));
+        DirectoryAccess.ApplyPrivateFile(ConfigPath);
+        DirectoryAccess.ApplyPrivateFile(CredentialPath);
+        LogDirectory.Prepare(Path.Combine(Root, "logs"), config.AccountSid);
+
+        string work = Path.Combine(Root, "upgrade-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(work);
+        DirectoryAccess.Apply(work);
+        string app = Path.Combine(Root, "app"), client = Path.Combine(Root, "client");
+        bool appSaved = false, clientSaved = false, appPlaced = false, clientPlaced = false;
+        bool preserveRecovery = false;
+        try
+        {
+            // Finish all package reads before stopping the service or replacing its files.
+            // Protect the staged app explicitly so its account read access survives the move into Root.
+            Directory.CreateDirectory(Path.Combine(work, "app"));
+            DirectoryAccess.Apply(Path.Combine(work, "app"), config.AccountSid);
+            CopyDirectory(AppContext.BaseDirectory, Path.Combine(work, "app"), new List<string>());
+            CopyDirectory(Path.Combine(AppContext.BaseDirectory, "client"), Path.Combine(work, "client"), new List<string>());
+            DirectoryAccess.ApplyTree(Path.Combine(work, "app"), config.AccountSid);
+            DirectoryAccess.ApplyTree(Path.Combine(work, "client"));
+            StopOwnService();
+            if (Directory.Exists(app)) { Directory.Move(app, Path.Combine(work, "old-app")); appSaved = true; }
+            if (Directory.Exists(client)) { Directory.Move(client, Path.Combine(work, "old-client")); clientSaved = true; }
+            Directory.Move(Path.Combine(work, "app"), app); appPlaced = true;
+            Directory.Move(Path.Combine(work, "client"), client); clientPlaced = true;
+            using var uninstall = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(UninstallKey, true)
+                ?? throw new IOException("升级时无法打开卸载登记.");
+            RunSc("config", Name, "start=", "auto");
+            uninstall.SetValue("DisplayVersion", currentText);
+        }
+        catch (Exception error)
+        {
+            try
+            {
+                if (clientPlaced) Directory.Delete(client, true);
+                if (clientSaved) Directory.Move(Path.Combine(work, "old-client"), client);
+                if (appPlaced) Directory.Delete(app, true);
+                if (appSaved) Directory.Move(Path.Combine(work, "old-app"), app);
+            }
+            catch (Exception rollbackError)
+            {
+                preserveRecovery = true;
+                throw new IOException($"升级失败: {error.Message}. 恢复旧程序也失败: {rollbackError.Message}. 请保留恢复目录 {work}. 凭据和日志未修改.", error);
+            }
+            throw new IOException("升级失败, 原程序已保留或恢复, 未启动服务. 凭据和日志未修改. " + error.Message, error);
+        }
+        finally
+        {
+            if (!preserveRecovery)
+            {
+                try { Directory.Delete(work, true); }
+                catch (Exception e) { Console.Error.WriteLine("临时升级文件未清理: " + work + ". " + e.Message); }
+            }
+        }
+    }
+
     public static int Install(string[] args, SecureString? suppliedPassword = null)
     {
         int elevation = ElevateIfNeeded("install", args); if (elevation >= 0) return elevation;
         CheckExternalPackage();
+        if (GetInstalledVersion() != null) throw new Exception("已安装 RDP Session Bootstrap, 请使用升级或修复操作以保留已有凭据.");
         var identity = WindowsIdentity.GetCurrent();
         string name = identity.Name;
         int slash = name.IndexOf('\\');
@@ -196,13 +282,18 @@ public static class Program
         {
             StopOwnService();
             Directory.CreateDirectory(Root);
-            SecureDirectory(Root);
+            DirectoryAccess.Apply(Root, config.AccountSid, traversalOnly: true);
             foreach (string folder in new[] { "app", "client", "private", "logs" })
-            { string path = Path.Combine(Root, folder); Directory.CreateDirectory(path); SecureDirectory(path); }
+            { string path = Path.Combine(Root, folder); Directory.CreateDirectory(path); DirectoryAccess.Apply(path, folder == "app" ? config.AccountSid : null); }
+            LogDirectory.Prepare(Path.Combine(Root, "logs"), config.AccountSid);
             CopyDirectory(AppContext.BaseDirectory, Path.Combine(Root, "app"), written);
             CopyDirectory(clientSource, Path.Combine(Root, "client"), written);
+            DirectoryAccess.ApplyTree(Path.Combine(Root, "app"), config.AccountSid);
+            DirectoryAccess.ApplyTree(Path.Combine(Root, "client"));
             try { File.WriteAllText(ConfigPath, JsonSerializer.Serialize(config), new UTF8Encoding(false)); written.Add(ConfigPath); } catch (Exception e) { throw new IOException("write_failed/recovery_required: " + ConfigPath, e); }
             try { File.WriteAllBytes(CredentialPath, Protect(secret, false)); written.Add(CredentialPath); } catch (Exception e) { throw new IOException("write_failed/recovery_required: " + CredentialPath, e); }
+            DirectoryAccess.ApplyPrivateFile(ConfigPath);
+            DirectoryAccess.ApplyPrivateFile(CredentialPath);
             if (QueryOwnServiceStatus() == null)
                 RunSc("create", Name, "binPath=", "\"" + Path.Combine(Root, "app", "RdpSessionBootstrap.exe") + "\" service", "start=", "auto", "obj=", "LocalSystem", "depend=", "TermService", "DisplayName=", "RDP Session Bootstrap");
             else RunSc("config", Name, "binPath=", "\"" + Path.Combine(Root, "app", "RdpSessionBootstrap.exe") + "\" service", "start=", "auto", "obj=", "LocalSystem", "depend=", "TermService");
@@ -210,14 +301,14 @@ public static class Program
             using (var uninstall = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\RdpSessionBootstrap"))
             {
                 uninstall.SetValue("DisplayName", "RDP Session Bootstrap");
-                uninstall.SetValue("DisplayVersion", "1.0.0");
+                uninstall.SetValue("DisplayVersion", typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion);
                 uninstall.SetValue("InstallLocation", Root);
                 uninstall.SetValue("UninstallString", "\"" + Path.Combine(Root, "app", "Setup.exe") + "\" --uninstall");
                 uninstall.SetValue("DisplayIcon", Path.Combine(Root, "app", "Setup.exe"));
                 uninstall.SetValue("NoModify", 1, Microsoft.Win32.RegistryValueKind.DWord);
                 uninstall.SetValue("NoRepair", 1, Microsoft.Win32.RegistryValueKind.DWord);
             }
-            Console.WriteLine("安装完成. 已配置开机自动启动, 本次没有发起 RDP 登录或重启. 请下次开机后查看 logs\\service.log.");
+            Console.WriteLine("安装完成. 已配置开机自动启动, 本次没有发起 RDP 登录或重启. 请下次开机后查看 logs 目录中的本次运行日志.");
             return 0;
         }
         catch (Exception error)
@@ -254,6 +345,33 @@ public static class Program
         return config;
     }
 
+    public static string PrepareLogDirectory()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        if (!new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator) ||
+            Process.GetCurrentProcess().SessionId == 0 || !Environment.UserInteractive)
+            throw new Exception("准备日志目录需要当前登录用户的管理员权限.");
+        if (GetInstalledVersion() == null || !Directory.Exists(Root))
+            throw new IOException("尚未安装, 无法打开日志目录.");
+        Config config;
+        try
+        {
+            config = JsonSerializer.Deserialize<Config>(File.ReadAllText(ConfigPath))
+                ?? throw new JsonException("安装配置为空.");
+            if (string.IsNullOrWhiteSpace(config.AccountSid)) throw new JsonException("安装账号 SID 缺失.");
+            _ = new SecurityIdentifier(config.AccountSid);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or ArgumentException)
+        {
+            throw new IOException("无法读取有效的安装配置, 日志目录权限未修改. " + e.Message, e);
+        }
+        if (identity.User?.Value != config.AccountSid)
+            throw new Exception("请使用原安装账号打开日志目录, 当前用户 SID 与已保存的账号不一致.");
+        string directory = Path.Combine(Root, "logs");
+        LogDirectory.Prepare(directory, config.AccountSid);
+        return directory;
+    }
+
     static void Status()
     {
         if (File.Exists(ConfigPath)) { activeConfig = CheckClientAndConfig(); Console.WriteLine("固定目标: 127.0.0.1 / " + activeConfig.Domain + @"\" + activeConfig.Username); }
@@ -270,7 +388,11 @@ public static class Program
         if (statusHandle == IntPtr.Zero) return;
         Report(2);
         Report(4);
-        try { Bootstrap(); }
+        try
+        {
+            runLog = new RunLog(Path.Combine(Root, "logs"));
+            Bootstrap();
+        }
         catch (Exception e) { Log("failed: " + e.Message); }
         finally { Report(1); }
     }
@@ -420,7 +542,7 @@ public static class Program
         string output = p.StandardOutput.ReadToEnd(), error = p.StandardError.ReadToEnd(); p.WaitForExit();
         if (p.ExitCode != 0) throw new Exception("Service configuration failed: " + output + error);
     }
-    static void Log(string message) => File.AppendAllText(Path.Combine(Root, "logs", "service.log"), DateTimeOffset.Now.ToString("O") + " " + message + Environment.NewLine, Encoding.UTF8);
+    static void Log(string message) => runLog?.Write(message);
 }
 
 static class Native

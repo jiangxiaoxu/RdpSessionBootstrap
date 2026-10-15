@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>RdpSessionBootstrap-Setup</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Shared/DirectoryAccess.cs" Link="DirectoryAccess.cs" />
+    <EmbeddedResource Include="$(PackageArchive)" LogicalName="Payload.zip" Condition="'$(PackageArchive)' != ''" />
+  </ItemGroup>
+  <Target Name="ValidatePackageArchive" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(PackageArchive)' == ''" Text="PackageArchive is required. Supply the full path to the installer payload ZIP." />
+    <Error Condition="'$(PackageArchive)' != '' and !Exists('$(PackageArchive)')" Text="PackageArchive does not exist: $(PackageArchive)" />
+  </Target>
+</Project>

@@ -1,77 +1,50 @@
 # 构建
 
-在 Windows x64 上使用 PowerShell 7 和 .NET 10 SDK. 服务和安装程序发布为 self-contained, 目标机器无需单独安装 .NET. 构建脚本只编译和打包, 不安装或启动服务.
+在 Windows x64 上准备 PowerShell 7, .NET 10 SDK, CMake, Git, 以及 Visual Studio 2022 或 2026 的 MSVC x64 C++ 工具链和 Windows SDK. 首次初始化需要联网下载源码和依赖. 脚本不会安装系统工具或启动本项目服务.
 
-## 已有 FreeRDP 客户端
+## Release 安装包
 
-把已编译的 `sfreerdp.exe` 和三个许可证文件放在同一目录, 然后在仓库根目录运行:
+在仓库根目录运行:
+
+```powershell
+./build.ps1
+```
+
+没有本地客户端时, `build.ps1` 自动调用 `init-dependencies.ps1`, 从源码构建 FreeRDP 客户端并整理许可证. 随后发布服务和安装器, 输出:
+
+- `artifacts/RdpSessionBootstrap-Setup-<版本>.exe`: 可单独下载和分发的完整安装程序.
+- `artifacts/package/`, `artifacts/payload.zip`, `artifacts/bundle/`: 打包中间产物, 不需要交给用户.
+
+外层 EXE 包含完整安装内容及运行时. 双击后先请求当前账号的管理员权限, 再解压至独立临时目录并启动安装界面, 界面退出后清理该目录. .NET 程序以 Release, win-x64, self-contained 发布, 目标机器无需另装 .NET. 构建不安装服务, 不发起 RDP 登录.
+
+## 版本
+
+项目版本统一由仓库根目录 `Directory.Build.props` 的 `Version` 定义, 初始为 `0.1.0`. 使用 `major.minor.patch` 三段数字. 后续发布只需更新这里, 再运行 `build.ps1`.
+
+服务, 安装界面和单文件入口共用该版本. 程序的 ProductVersion, 安装界面及 Windows 卸载登记使用三段版本; AssemblyVersion, FileVersion 和 Windows manifest 使用追加 `.0` 的四段版本. 分发 EXE 文件名包含三段版本号. FreeRDP 等第三方依赖保留自己的独立版本.
+
+## 单独初始化客户端依赖
+
+```powershell
+./init-dependencies.ps1
+```
+
+源码, 下载缓存, vcpkg 及编译产物均位于 `artifacts/dependencies/`. 客户端和三个许可证输出到 `artifacts/dependencies/client-bin/`. 重复运行会复用下载及构建缓存.
+
+初始化固定使用 FreeRDP 3.32.2, 校验源码 ZIP 的 SHA256 为 `49BDFE90DDFBC1152FF8EBBB2F81EDFF0C753533119FBFC76A5A5A8236F1B5D7`, 再应用仓库中两个补丁. vcpkg 源码版本固定在初始化脚本中, OpenSSL 和 zlib 通过该版本构建为静态库. 客户端采用 MSVC Release 和静态 CRT, 关闭音视频, 重定向和图形客户端依赖.
+
+原始构建记录位于 `third_party/freerdp/provenance.json`. 其中二进制 hash 和依赖版本仅代表原验证基线; 不同 MSVC 或依赖版本重新构建的二进制不承诺字节相同.
+
+## 使用已有客户端
+
+已有客户端时可跳过初始化. 把 `sfreerdp.exe` 和 `LICENSE-FreeRDP.txt`, `LICENSE-OpenSSL.txt`, `LICENSE-zlib.txt` 放在同一目录, 然后运行:
 
 ```powershell
 ./build.ps1 -ClientPath 'D:/build/client-bin/sfreerdp.exe'
 ```
 
-输出为 `artifacts/package/` 和 `artifacts/RdpSessionBootstrap-win-x64.zip`. `-SkipZip` 可省略 ZIP. 两个项目顺序发布到同一目录, 保留 `Setup.runtimeconfig.json` 和 `RdpSessionBootstrap.runtimeconfig.json`. 客户端及其许可证位于安装包的 `client/` 子目录. 生成目录不提交到 Git.
+客户端应由本仓库所用的 FreeRDP 版本和补丁构建. 补丁使 Sample 客户端可在 Windows 无界面运行并移除 channel 加载.
 
-## 从源码构建 FreeRDP
+## 验证
 
-需要 Visual Studio 2022 的 MSVC x64 C++ 工具链, Windows SDK, CMake 和 Git. 使用 Developer PowerShell, 使 `cmake` 可直接调用. 以下路径均为示例, `$repo` 应设置为本仓库实际路径, `$work` 为独立构建目录.
-
-FreeRDP 源码: https://github.com/FreeRDP/FreeRDP/archive/refs/tags/3.32.2.zip
-
-该 ZIP 的 SHA256: `49BDFE90DDFBC1152FF8EBBB2F81EDFF0C753533119FBFC76A5A5A8236F1B5D7`.
-
-下载 ZIP, 使用 `Get-FileHash -Algorithm SHA256` 核对后解压到 `$work/src/FreeRDP-3.32.2`. 从 https://github.com/microsoft/vcpkg 获取 vcpkg, 放在 `$work/vcpkg`. 已验证的依赖版本为 OpenSSL `3.6.5#1`, zlib `1.3.2#2`, vcpkg tool `2026-09-26`. 原构建使用的 vcpkg ZIP 未记录 ports commit, 上述版本仅是已验证基线, 不保证字节级复现. 其他版本尚未验证. 客户端来源及校验值保存在 `third_party/freerdp/provenance.json`.
-
-按以下顺序应用两个补丁并构建静态依赖. 每个原生命令成功后再继续, 非零退出码时停止.
-
-```powershell
-$repo = (Get-Location).Path
-$work = 'D:/build/rdp-client'
-$source = Join-Path $work 'src/FreeRDP-3.32.2'
-$vcpkg = Join-Path $work 'vcpkg'
-
-git -C $source apply (Join-Path $repo 'third_party/freerdp/windows-headless.patch')
-git -C $source apply (Join-Path $repo 'third_party/freerdp/sample-no-channels.patch')
-& "$vcpkg/bootstrap-vcpkg.bat" -disableMetrics
-& "$vcpkg/vcpkg.exe" install openssl:x64-windows-static zlib:x64-windows-static
-```
-
-补丁使 Sample 客户端可以在 Windows 无界面运行, 并移除不需要的 channel 加载. 以下是已验证构建使用的 CMake 配置, 使用静态 OpenSSL/zlib 和 `/MT`, 关闭音视频, 重定向及图形客户端依赖:
-
-```powershell
-$options = @(
-    '-S', $source, '-B', "$work/obj", '-G', 'Visual Studio 17 2022', '-A', 'x64',
-    "-DCMAKE_TOOLCHAIN_FILE=$vcpkg/scripts/buildsystems/vcpkg.cmake",
-    '-DVCPKG_TARGET_TRIPLET=x64-windows-static',
-    '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded',
-    "-DCMAKE_INSTALL_PREFIX=$work/install",
-    '-DBUILD_SHARED_LIBS=OFF', '-DWITH_SAMPLE=ON',
-    '-DWITH_CLIENT_WINDOWS=OFF', '-DWITH_OPUS=OFF', '-DWITH_CLIENT_SDL=OFF',
-    '-DWITH_SERVER=OFF', '-DWITH_SHADOW=OFF', '-DWITH_PROXY=OFF',
-    '-DWITH_PLATFORM_SERVER=OFF', '-DWITH_CHANNELS=OFF',
-    '-DWITH_SMARTCARD_EMULATE=OFF', '-DWITH_SMARTCARD_PCSC=OFF',
-    '-DWITH_WINPR_TOOLS=OFF', '-DWITH_FFMPEG=OFF', '-DWITH_DSP_FFMPEG=OFF',
-    '-DWITH_VIDEO_FFMPEG=OFF', '-DWITH_OPENH264=OFF', '-DWITH_OPENSSL=ON',
-    '-DWITH_MBEDTLS=OFF', '-DWITH_URIPARSER=OFF', '-DWITH_AAD=OFF',
-    '-DWITH_PKCS11=OFF', '-DWITH_JPEG=OFF', '-DWITH_CAIRO=OFF',
-    '-DWITH_RDTK=OFF', '-DWITH_MANPAGES=OFF', '-DBUILD_TESTING=OFF',
-    '-DWITH_WINMM=OFF', '-DWITH_SWSCALE=OFF', '-DWITH_WEBVIEW=OFF',
-    '-DWITH_MEDIA_FOUNDATION=OFF', '-DWITH_GFX_H264=OFF'
-)
-cmake @options
-cmake --build "$work/obj" --config Release --target sfreerdp --parallel
-```
-
-整理客户端及其许可证后打包:
-
-```powershell
-$clientBin = Join-Path $work 'client-bin'
-[void][IO.Directory]::CreateDirectory($clientBin)
-Copy-Item "$work/obj/client/Sample/Release/sfreerdp.exe" $clientBin
-Copy-Item "$source/LICENSE" "$clientBin/LICENSE-FreeRDP.txt"
-Copy-Item "$vcpkg/installed/x64-windows-static/share/openssl/copyright" "$clientBin/LICENSE-OpenSSL.txt"
-Copy-Item "$vcpkg/installed/x64-windows-static/share/zlib/copyright" "$clientBin/LICENSE-zlib.txt"
-& "$repo/build.ps1" -ClientPath "$clientBin/sfreerdp.exe"
-```
-
-交付前可用 `sfreerdp.exe /version`, `/help` 和 MSVC `dumpbin /dependents` 检查版本及依赖. 已验证的客户端只依赖 Windows 系统 DLL. 完整安装和开机登录验收需要在安装界面输入真实账号密码, 编译成功不能替代这一验收.
+初始化时检查客户端的 `/version` 和 `/help`. 完整安装和开机登录验收需要在安装界面输入真实账号密码. 编译成功不能替代冷启动, 五秒断开保留会话以及中途被其他 RDP 接管的验收, 具体见 README.

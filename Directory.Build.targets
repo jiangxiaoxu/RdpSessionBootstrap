@@ -1,0 +1,19 @@
+<Project>
+  <Target Name="GenerateVersionedApplicationManifest"
+          BeforeTargets="_SetExternalWin32ManifestProperties;_SetEmbeddedWin32ManifestProperties"
+          Condition="'$(ApplicationManifest)' != ''">
+    <PropertyGroup>
+      <_VersionedApplicationManifest>$(IntermediateOutputPath)app.manifest</_VersionedApplicationManifest>
+      <_ApplicationManifestContent>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)/$(ApplicationManifest)').Replace('@VERSION@', '$(AssemblyVersion)'))</_ApplicationManifestContent>
+    </PropertyGroup>
+    <MakeDir Directories="$(IntermediateOutputPath)" />
+    <WriteLinesToFile File="$(_VersionedApplicationManifest)" Lines="$(_ApplicationManifestContent)"
+                      Overwrite="true" WriteOnlyWhenDifferent="true" Encoding="utf-8" />
+    <PropertyGroup>
+      <ApplicationManifest>$(_VersionedApplicationManifest)</ApplicationManifest>
+    </PropertyGroup>
+    <ItemGroup>
+      <FileWrites Include="$(_VersionedApplicationManifest)" />
+    </ItemGroup>
+  </Target>
+</Project>
