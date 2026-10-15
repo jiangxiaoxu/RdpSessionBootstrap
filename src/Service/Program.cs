@@ -332,13 +332,17 @@ public static class Program
         if (created != null)
         {
             Log($"new target account session {created.Id} active; waiting 5 seconds before disconnect");
-            Stop.Wait(5000);
-            if (!Native.WTSDisconnectSession(IntPtr.Zero, created.Id, false))
-                Log("disconnect failed: Win32=" + Marshal.GetLastWin32Error());
-            else Log($"session {created.Id} disconnect requested after login delay");
+            var delay = Stopwatch.StartNew();
+            while (delay.ElapsedMilliseconds < 5000 && !Stop.IsSet && !child.HasExited)
+                Stop.Wait((int)Math.Clamp(5000 - delay.ElapsedMilliseconds, 0, 100));
+            if (child.HasExited) Log("local RDP client exited during login delay; no retry");
+            else if (Stop.IsSet) Log("service stopped during login delay");
+            else Log("login delay completed; closing local RDP client");
         }
         else Log("failed: no target account session observed; no retry");
-        if (!child.WaitForExit(15000)) { child.Kill(true); child.WaitForExit(); Log("local client stopped after disconnect wait"); }
+        // 其他 RDP 连接可能已接管同一 session. 只关闭本次 client, 不按 session ID 断开连接.
+        if (!child.HasExited) child.Kill(true);
+        if (!child.WaitForExit(5000)) throw new TimeoutException("local RDP client did not exit within cleanup wait");
         Log("boot attempt finished; login observed=" + (created != null) + "; client exit=" + child.ExitCode);
         }
         finally
@@ -440,7 +444,6 @@ static class Native
     [DllImport("wtsapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool WTSEnumerateSessions(IntPtr server, int reserved, int version, out IntPtr data, out int count);
     [DllImport("wtsapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool WTSQuerySessionInformation(IntPtr server, int id, int cls, out IntPtr data, out int count);
     [DllImport("wtsapi32.dll")] public static extern void WTSFreeMemory(IntPtr data);
-    [DllImport("wtsapi32.dll", SetLastError=true)] public static extern bool WTSDisconnectSession(IntPtr server, int id, bool wait);
     [DllImport("crypt32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool CryptProtectData(ref Blob input, string description, IntPtr entropy, IntPtr reserved, IntPtr prompt, int flags, out Blob output);
     [DllImport("crypt32.dll", SetLastError=true)] public static extern bool CryptUnprotectData(ref Blob input, IntPtr description, IntPtr entropy, IntPtr reserved, IntPtr prompt, int flags, out Blob output);
     [DllImport("kernel32.dll")] public static extern IntPtr LocalFree(IntPtr data);
