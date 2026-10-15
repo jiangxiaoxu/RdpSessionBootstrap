@@ -4,8 +4,6 @@ Windows 开机登录辅助工具. 开机后使用安装账号连接本机 RDP (`
 
 **[下载最新版](https://github.com/jiangxiaoxu/RdpSessionBootstrap/releases/latest)** | **[下载 0.1.0 单文件安装器](https://github.com/jiangxiaoxu/RdpSessionBootstrap/releases/download/v0.1.0/RdpSessionBootstrap-Setup-0.1.0.exe)**
 
-仓库目前为 private, 下载需要具有仓库访问权限的 GitHub 账号.
-
 ## 安装要求
 
 - Windows x64, 已启用远程桌面服务, 本机 RDP 端口为 3389.
